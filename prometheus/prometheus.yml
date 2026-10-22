@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # 1. Scrape metrics from Apartment Management Web Application
+  - job_name: 'apartment-app'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['apartment-app:5000']
+        labels:
+          app: 'apartment-management'
+          tier: 'backend'
+          env: 'production'
+          student: 'DTC245200572'
+
+  # 2. Scrape internal Prometheus metrics
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          app: 'prometheus-monitor'
