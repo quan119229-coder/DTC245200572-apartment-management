@@ -1,0 +1,200 @@
+# ====================================================================
+# PROJECT: HE THONG QUAN LY CHUNG CU / CAN HO - DE 36
+# MON HOC: TRIEN KHAI VA QUAN TRI HE THONG PHAN MEM (ICTU 2026)
+# SINH VIEN: Le Hoang Quan - MSSV: DTC245200572 - LOP: K23.K1.CNTT K23C
+# ====================================================================
+
+version: '3.8'
+
+services:
+  # ------------------------------------------------------------------
+  # 1. WEB APPLICATION (Node.js Express + Observability Metrics)
+  # ------------------------------------------------------------------
+  apartment-app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: apartment-app
+    restart: unless-stopped
+    environment:
+      - DB_HOST=${DB_HOST:-apartment-db}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-SecureApartmentDB2026!Quan}
+      - DB_NAME=${DB_NAME:-apartment_db}
+      - APP_PORT=5000
+      - NODE_ENV=production
+    networks:
+      - frontend_net
+      - backend_net
+      - monitoring_net
+    depends_on:
+      apartment-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ------------------------------------------------------------------
+  # 2. DATABASE SERVICE (PostgreSQL 16)
+  # ------------------------------------------------------------------
+  apartment-db:
+    image: postgres:16-alpine
+    container_name: apartment-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-SecureApartmentDB2026!Quan}
+      POSTGRES_DB: ${DB_NAME:-apartment_db}
+    volumes:
+      - apartment_pgdata:/var/lib/postgresql/data
+      - ./db/init/01-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - backend_net # Network Isolation: Chi ket noi mang noi bo voi Web App & pgAdmin
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ------------------------------------------------------------------
+  # 3. DATABASE ADMINISTRATION (pgAdmin 4)
+  # ------------------------------------------------------------------
+  apartment-pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: apartment-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@apartment.ictu.edu.vn}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-AdminP@ssword2026!}
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    networks:
+      - frontend_net
+      - backend_net
+    depends_on:
+      - apartment-db
+
+  # ------------------------------------------------------------------
+  # 4. REVERSE PROXY & SECURITY GATEWAY (Nginx + SSL + Headers)
+  # ------------------------------------------------------------------
+  apartment-nginx:
+    image: nginx:1.27-alpine
+    container_name: apartment-nginx
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+    networks:
+      - frontend_net
+    depends_on:
+      - apartment-app
+
+  # ------------------------------------------------------------------
+  # 5. MONITORING & METRICS COLLECTION (Prometheus)
+  # ------------------------------------------------------------------
+  apartment-prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: apartment-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring_net
+    depends_on:
+      - apartment-app
+
+  # ------------------------------------------------------------------
+  # 6. OBSERVABILITY DASHBOARD (Grafana)
+  # ------------------------------------------------------------------
+  apartment-grafana:
+    image: grafana/grafana:10.4.1
+    container_name: apartment-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=AdminGrafana2026!
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      - frontend_net
+      - monitoring_net
+    depends_on:
+      - apartment-prometheus
+
+  # ------------------------------------------------------------------
+  # 7. CENTRALIZED LOGGING STORAGE (Grafana Loki)
+  # ------------------------------------------------------------------
+  apartment-loki:
+    image: grafana/loki:2.9.4
+    container_name: apartment-loki
+    restart: unless-stopped
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/tmp/loki
+    networks:
+      - monitoring_net
+
+  # ------------------------------------------------------------------
+  # 8. CONTAINER LOG COLLECTOR (Promtail)
+  # ------------------------------------------------------------------
+  apartment-promtail:
+    image: grafana/promtail:2.9.4
+    container_name: apartment-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./promtail/promtail-config.yaml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - nginx_logs:/var/log/nginx:ro
+    networks:
+      - monitoring_net
+    depends_on:
+      - apartment-loki
+
+# ====================================================================
+# NETWORKS DEFINITION (ISOLATION HARDENING)
+# ====================================================================
+networks:
+  frontend_net:
+    driver: bridge
+    name: apartment_frontend_net
+  backend_net:
+    driver: bridge
+    name: apartment_backend_net
+  monitoring_net:
+    driver: bridge
+    name: apartment_monitoring_net
+
+# ====================================================================
+# VOLUMES DEFINITION (PERSISTENT DATA)
+# ====================================================================
+volumes:
+  apartment_pgdata:
+    name: apartment_pgdata
+  nginx_logs:
+    name: apartment_nginx_logs
+  prometheus_data:
+    name: apartment_prometheus_data
+  grafana_data:
+    name: apartment_grafana_data
+  loki_data:
+    name: apartment_loki_data
